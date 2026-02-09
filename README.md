@@ -24,7 +24,7 @@ Built with [Tauri 2](https://v2.tauri.app/), [Svelte 5](https://svelte.dev/), an
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/git-history-editor.git
+git clone https://github.com/pascalweiss/git-history-editor.git
 cd git-history-editor
 
 # Install frontend dependencies
