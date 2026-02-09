@@ -1,0 +1,16 @@
+[package]
+name = "git-history-editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-build = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+git2 = { version = "0.20", features = ["vendored-libgit2"] }
+chrono = { version = "0.4", features = ["serde"] }
+tauri-plugin-dialog = "2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

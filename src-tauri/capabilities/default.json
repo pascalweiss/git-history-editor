@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-desktop/refs/heads/main/nicegram-features/src-nicegram-tauri/gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}
