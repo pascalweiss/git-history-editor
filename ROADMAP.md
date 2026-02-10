@@ -19,7 +19,7 @@
 - [x] Create `scripts/build.sh` — Builds universal binary, codesigns with Developer ID, verifies signature
 - [x] Create `scripts/notarize.sh` — Submits `.app` or `.dmg` to Apple notarization, waits, staples ticket. Supports both API key and Apple ID auth.
 - [x] Create `scripts/release.sh` — Full pipeline: build → sign → notarize app → create DMG → sign DMG → notarize DMG
-- [ ] Add tests for the rewrite algorithm and timezone logic
+- [x] Add tests — 11 Rust tests covering: open repo (with commits, empty, non-git), commit pagination, commit detail, rewrite (message, author, descendant preservation), backup/restore cycle
 - [ ] Add `tauri-plugin-updater` for auto-updates
 - [ ] Write a privacy policy page (required even for notarized distribution)
 

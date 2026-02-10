@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct RepoInfo {
     pub path: String,
     pub branch: String,
@@ -175,23 +175,23 @@ pub fn get_commit_detail(path: String, oid: String) -> Result<CommitDetail, Stri
     })
 }
 
-#[tauri::command]
-pub fn update_commit(
-    app: AppHandle,
-    path: String,
-    oid: String,
-    new_author_name: Option<String>,
-    new_author_email: Option<String>,
+/// Core rewrite logic, separated from the Tauri command for testability.
+/// `on_progress` is called with (current_index, total_count) during the walk.
+pub fn rewrite_commit(
+    repo: &Repository,
+    target_oid: Oid,
+    new_author_name: Option<&str>,
+    new_author_email: Option<&str>,
     new_author_date: Option<i64>,
     new_author_offset: Option<i32>,
-    new_committer_name: Option<String>,
-    new_committer_email: Option<String>,
+    new_committer_name: Option<&str>,
+    new_committer_email: Option<&str>,
     new_committer_date: Option<i64>,
     new_committer_offset: Option<i32>,
-    new_message: Option<String>,
+    new_message: Option<&str>,
+    on_progress: &dyn Fn(usize, usize),
 ) -> Result<RewriteResult, String> {
-    let repo = open_repo(&path)?;
-    let target_oid = Oid::from_str(&oid).map_err(|e| e.to_string())?;
+    let oid = target_oid.to_string();
 
     // Find the branch ref that HEAD points to
     let head = repo.head().map_err(|e| e.to_string())?;
@@ -235,9 +235,8 @@ pub fn update_commit(
     let total = all_oids.len();
 
     for (idx, current_oid) in all_oids.iter().enumerate() {
-        // Emit progress every 100 commits to avoid flooding the event bus
         if idx % 100 == 0 {
-            let _ = app.emit("rewrite-progress", RewriteProgress { current: idx, total });
+            on_progress(idx, total);
         }
         let commit = repo.find_commit(*current_oid).map_err(|e| e.to_string())?;
 
@@ -267,11 +266,9 @@ pub fn update_commit(
         let author_email_str;
         let author = if is_target {
             author_name_str = new_author_name
-                .as_deref()
                 .unwrap_or(orig_author.name().unwrap_or(""))
                 .to_string();
             author_email_str = new_author_email
-                .as_deref()
                 .unwrap_or(orig_author.email().unwrap_or(""))
                 .to_string();
             let time = git2::Time::new(
@@ -297,11 +294,9 @@ pub fn update_commit(
         let committer_email_str;
         let committer = if is_target {
             committer_name_str = new_committer_name
-                .as_deref()
                 .unwrap_or(orig_committer.name().unwrap_or(""))
                 .to_string();
             committer_email_str = new_committer_email
-                .as_deref()
                 .unwrap_or(orig_committer.email().unwrap_or(""))
                 .to_string();
             let time = git2::Time::new(
@@ -324,7 +319,6 @@ pub fn update_commit(
         // Determine message
         let message = if is_target {
             new_message
-                .as_deref()
                 .unwrap_or(commit.message().unwrap_or(""))
                 .to_string()
         } else {
@@ -361,6 +355,42 @@ pub fn update_commit(
         new_oid: new_target_oid.to_string(),
         commits_rewritten,
     })
+}
+
+#[tauri::command]
+pub fn update_commit(
+    app: AppHandle,
+    path: String,
+    oid: String,
+    new_author_name: Option<String>,
+    new_author_email: Option<String>,
+    new_author_date: Option<i64>,
+    new_author_offset: Option<i32>,
+    new_committer_name: Option<String>,
+    new_committer_email: Option<String>,
+    new_committer_date: Option<i64>,
+    new_committer_offset: Option<i32>,
+    new_message: Option<String>,
+) -> Result<RewriteResult, String> {
+    let repo = open_repo(&path)?;
+    let target_oid = Oid::from_str(&oid).map_err(|e| e.to_string())?;
+
+    rewrite_commit(
+        &repo,
+        target_oid,
+        new_author_name.as_deref(),
+        new_author_email.as_deref(),
+        new_author_date,
+        new_author_offset,
+        new_committer_name.as_deref(),
+        new_committer_email.as_deref(),
+        new_committer_date,
+        new_committer_offset,
+        new_message.as_deref(),
+        &|current, total| {
+            let _ = app.emit("rewrite-progress", RewriteProgress { current, total });
+        },
+    )
 }
 
 #[derive(Serialize, Clone)]
@@ -437,4 +467,253 @@ pub fn restore_backup(path: String) -> Result<String, String> {
     backup_ref.delete().map_err(|e| format!("Restored successfully but failed to clean up backup ref: {}", e))?;
 
     Ok(backup_oid.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Create a temp repo with the given number of commits on "main".
+    fn create_test_repo(num_commits: usize) -> (TempDir, Repository) {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Configure so commits work
+        let sig = Signature::now("Test User", "test@example.com").unwrap();
+
+        {
+            let mut parent_oid: Option<Oid> = None;
+
+            for i in 0..num_commits {
+                let mut index = repo.index().unwrap();
+                let file_path = format!("file_{}.txt", i);
+                let full_path = dir.path().join(&file_path);
+                std::fs::write(&full_path, format!("content {}", i)).unwrap();
+                index.add_path(Path::new(&file_path)).unwrap();
+                index.write().unwrap();
+                let tree_oid = index.write_tree().unwrap();
+                let tree = repo.find_tree(tree_oid).unwrap();
+
+                let parent_commit = parent_oid.map(|oid| repo.find_commit(oid).unwrap());
+                let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
+                let oid = repo
+                    .commit(Some("HEAD"), &sig, &sig, &format!("Commit {}", i), &tree, &parents)
+                    .unwrap();
+
+                parent_oid = Some(oid);
+            }
+        }
+
+        // Make sure HEAD points to refs/heads/main
+        if num_commits > 0 {
+            let head = repo.head().unwrap();
+            if head.shorthand() != Some("main") {
+                let mut branch = repo.find_branch(
+                    head.shorthand().unwrap(),
+                    git2::BranchType::Local,
+                ).unwrap();
+                branch.rename("main", true).unwrap();
+            }
+        }
+
+        (dir, repo)
+    }
+
+    #[test]
+    fn test_open_repository_with_commits() {
+        let (dir, _repo) = create_test_repo(3);
+        let result = open_repository(dir.path().to_str().unwrap().to_string());
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        assert_eq!(info.commit_count, 3);
+        assert_eq!(info.branch, "main");
+    }
+
+    #[test]
+    fn test_open_repository_empty() {
+        let dir = TempDir::new().unwrap();
+        Repository::init(dir.path()).unwrap();
+        let result = open_repository(dir.path().to_str().unwrap().to_string());
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        assert_eq!(info.commit_count, 0);
+    }
+
+    #[test]
+    fn test_open_repository_not_a_repo() {
+        let dir = TempDir::new().unwrap();
+        let result = open_repository(dir.path().to_str().unwrap().to_string());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not a Git repository") || err.contains("Failed to open repository"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_get_commits_pagination() {
+        let (dir, _repo) = create_test_repo(5);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let first_page = get_commits(path.clone(), 0, 3).unwrap();
+        assert_eq!(first_page.len(), 3);
+
+        let second_page = get_commits(path.clone(), 3, 3).unwrap();
+        assert_eq!(second_page.len(), 2);
+
+        // No overlap
+        assert_ne!(first_page[2].oid, second_page[0].oid);
+    }
+
+    #[test]
+    fn test_get_commits_empty_repo() {
+        let dir = TempDir::new().unwrap();
+        Repository::init(dir.path()).unwrap();
+        let result = get_commits(dir.path().to_str().unwrap().to_string(), 0, 10);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_get_commit_detail() {
+        let (dir, _repo) = create_test_repo(1);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let commits = get_commits(path.clone(), 0, 10).unwrap();
+        let detail = get_commit_detail(path, commits[0].oid.clone()).unwrap();
+
+        assert_eq!(detail.message, "Commit 0");
+        assert_eq!(detail.author_name, "Test User");
+        assert_eq!(detail.author_email, "test@example.com");
+        assert!(!detail.is_merge);
+        assert!(detail.parent_oids.is_empty());
+    }
+
+    #[test]
+    fn test_rewrite_commit_changes_message() {
+        let (dir, repo) = create_test_repo(3);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let commits = get_commits(path.clone(), 0, 10).unwrap();
+        // Get the oldest commit (last in the list since sorted newest-first)
+        let oldest = &commits[2];
+
+        let target_oid = Oid::from_str(&oldest.oid).unwrap();
+        let result = rewrite_commit(
+            &repo, target_oid,
+            None, None, None, None,
+            None, None, None, None,
+            Some("New message"),
+            &|_, _| {},
+        ).unwrap();
+
+        assert_eq!(result.commits_rewritten, 3); // Rewrites oldest + 2 descendants
+
+        // Verify the new commit has the changed message
+        let detail = get_commit_detail(path, result.new_oid.clone()).unwrap();
+        assert_eq!(detail.message, "New message");
+    }
+
+    #[test]
+    fn test_rewrite_commit_changes_author() {
+        let (dir, repo) = create_test_repo(2);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let commits = get_commits(path.clone(), 0, 10).unwrap();
+        let latest = &commits[0];
+
+        let target_oid = Oid::from_str(&latest.oid).unwrap();
+        let result = rewrite_commit(
+            &repo, target_oid,
+            Some("New Author"), Some("new@example.com"), None, None,
+            None, None, None, None,
+            None,
+            &|_, _| {},
+        ).unwrap();
+
+        assert_eq!(result.commits_rewritten, 1); // Only HEAD commit, no descendants
+
+        let detail = get_commit_detail(path, result.new_oid).unwrap();
+        assert_eq!(detail.author_name, "New Author");
+        assert_eq!(detail.author_email, "new@example.com");
+    }
+
+    #[test]
+    fn test_rewrite_preserves_descendants() {
+        let (dir, repo) = create_test_repo(3);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let commits_before = get_commits(path.clone(), 0, 10).unwrap();
+        let oldest = &commits_before[2];
+
+        let target_oid = Oid::from_str(&oldest.oid).unwrap();
+        rewrite_commit(
+            &repo, target_oid,
+            None, None, None, None,
+            None, None, None, None,
+            Some("Changed root"),
+            &|_, _| {},
+        ).unwrap();
+
+        // Reload commits after rewrite
+        let commits_after = get_commits(path, 0, 10).unwrap();
+        assert_eq!(commits_after.len(), 3);
+
+        // All OIDs should be different (rewritten)
+        for (before, after) in commits_before.iter().zip(commits_after.iter()) {
+            assert_ne!(before.oid, after.oid);
+        }
+
+        // But messages of non-target commits should be preserved
+        assert_eq!(commits_after[0].short_message, "Commit 2");
+        assert_eq!(commits_after[1].short_message, "Commit 1");
+        assert_eq!(commits_after[2].short_message, "Changed root");
+    }
+
+    #[test]
+    fn test_backup_and_restore() {
+        let (dir, repo) = create_test_repo(2);
+        let path = dir.path().to_str().unwrap().to_string();
+
+        let commits_before = get_commits(path.clone(), 0, 10).unwrap();
+        let original_head_oid = commits_before[0].oid.clone();
+
+        // Rewrite and verify backup exists
+        let target_oid = Oid::from_str(&original_head_oid).unwrap();
+        rewrite_commit(
+            &repo, target_oid,
+            None, None, None, None,
+            None, None, None, None,
+            Some("Rewritten"),
+            &|_, _| {},
+        ).unwrap();
+
+        let backup = check_backup(path.clone()).unwrap();
+        assert!(backup.exists);
+        assert_eq!(backup.backup_oid.as_deref(), Some(original_head_oid.as_str()));
+
+        // Restore
+        let restored_oid = restore_backup(path.clone()).unwrap();
+        assert_eq!(restored_oid, original_head_oid);
+
+        // Backup should be gone
+        let backup_after = check_backup(path.clone()).unwrap();
+        assert!(!backup_after.exists);
+
+        // Commits should be back to original
+        let commits_after = get_commits(path, 0, 10).unwrap();
+        assert_eq!(commits_after[0].oid, original_head_oid);
+    }
+
+    #[test]
+    fn test_no_backup_initially() {
+        let (dir, _repo) = create_test_repo(1);
+        let backup = check_backup(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(!backup.exists);
+        assert!(backup.backup_oid.is_none());
+    }
 }
