@@ -49,15 +49,22 @@ fn open_repo(path: &str) -> Result<Repository, String> {
 pub fn open_repository(path: String) -> Result<RepoInfo, String> {
     let repo = open_repo(&path)?;
 
-    let branch = repo
-        .head()
-        .ok()
+    let head = repo.head().ok();
+
+    let branch = head
+        .as_ref()
         .and_then(|h| h.shorthand().map(String::from))
         .unwrap_or_else(|| "HEAD (detached)".to_string());
 
-    let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
-    revwalk.push_head().map_err(|e| e.to_string())?;
-    let commit_count = revwalk.count();
+    let commit_count = if head.is_some() {
+        let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
+        match revwalk.push_head() {
+            Ok(_) => revwalk.count(),
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
 
     Ok(RepoInfo {
         path,
@@ -71,7 +78,9 @@ pub fn get_commits(path: String, offset: usize, limit: usize) -> Result<Vec<Comm
     let repo = open_repo(&path)?;
 
     let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
-    revwalk.push_head().map_err(|e| e.to_string())?;
+    if revwalk.push_head().is_err() {
+        return Ok(vec![]);
+    }
     revwalk
         .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
         .map_err(|e| e.to_string())?;
@@ -168,7 +177,7 @@ pub fn update_commit(
     let head = repo.head().map_err(|e| e.to_string())?;
     let branch_ref_name = head
         .name()
-        .ok_or("HEAD is not a symbolic reference")?
+        .ok_or("Cannot rewrite history: HEAD is detached. Please check out a branch first.")?
         .to_string();
     let head_oid = head.target().ok_or("HEAD has no target")?;
 
