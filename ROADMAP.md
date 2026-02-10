@@ -16,9 +16,9 @@
 
 ## Phase 3 — Testing & Distribution
 
-- [ ] Create a `scripts/build.sh` script that produces a signed `.app` bundle (universal binary via `tauri build --target universal-apple-darwin`, codesigned with Developer ID)
-- [ ] Create a `scripts/notarize.sh` script that submits the `.app` to Apple's notarization service via `xcrun notarytool` and staples the result
-- [ ] Create a `scripts/release.sh` script that runs build + notarize end-to-end and produces a ready-to-distribute `.dmg`
+- [x] Create `scripts/build.sh` — Builds universal binary, codesigns with Developer ID, verifies signature
+- [x] Create `scripts/notarize.sh` — Submits `.app` or `.dmg` to Apple notarization, waits, staples ticket. Supports both API key and Apple ID auth.
+- [x] Create `scripts/release.sh` — Full pipeline: build → sign → notarize app → create DMG → sign DMG → notarize DMG
 - [ ] Add tests for the rewrite algorithm and timezone logic
 - [ ] Add `tauri-plugin-updater` for auto-updates
 - [ ] Write a privacy policy page (required even for notarized distribution)
