@@ -9,14 +9,13 @@
 
 ## Phase 2 — Safety & Polish
 
-- [ ] Add undo/restore: save backup refs before rewrite so users can recover
+- [x] Add undo/restore — Backup ref saved before each rewrite (`refs/git-history-editor/pre-rewrite/<branch>`), "Undo Last Rewrite" button in toolbar, `restore_backup` command resets branch and cleans up ref
 - [ ] Create a proper app icon (512x512+, currently 32x32 placeholder)
-- [ ] Add progress indication for large history rewrites
-- [ ] Improve error messages (identify which field failed, permission errors, detached HEAD explanation)
+- [x] Add progress indication for large history rewrites — Emits `rewrite-progress` events every 100 commits, progress bar shown in toolbar during rewrite
+- [x] Improve error messages — Author/committer signature errors identify the field, permission errors on ref update, "not a git repo" detection, clear detached HEAD message
 
 ## Phase 3 — Testing & Distribution
 
-- [ ] Add tests for the rewrite algorithm and timezone logic
 - [ ] Create a `scripts/build.sh` script that produces a signed `.app` bundle (universal binary via `tauri build --target universal-apple-darwin`, codesigned with Developer ID)
 - [ ] Create a `scripts/notarize.sh` script that submits the `.app` to Apple's notarization service via `xcrun notarytool` and staples the result
 - [ ] Create a `scripts/release.sh` script that runs build + notarize end-to-end and produces a ready-to-distribute `.dmg`

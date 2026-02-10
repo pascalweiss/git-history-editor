@@ -1,6 +1,7 @@
 use git2::{Oid, Repository, Signature, Sort};
 use serde::Serialize;
 use std::collections::HashMap;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Clone)]
 pub struct RepoInfo {
@@ -35,14 +36,32 @@ pub struct CommitDetail {
 }
 
 #[derive(Serialize, Clone)]
+pub struct RewriteProgress {
+    pub current: usize,
+    pub total: usize,
+}
+
+#[derive(Serialize, Clone)]
 pub struct RewriteResult {
     pub old_oid: String,
     pub new_oid: String,
     pub commits_rewritten: usize,
 }
 
+const BACKUP_REF_PREFIX: &str = "refs/git-history-editor/pre-rewrite/";
+
+fn backup_ref_name(branch_shorthand: &str) -> String {
+    format!("{}{}", BACKUP_REF_PREFIX, branch_shorthand)
+}
+
 fn open_repo(path: &str) -> Result<Repository, String> {
-    Repository::open(path).map_err(|e| format!("Failed to open repository: {}", e))
+    Repository::open(path).map_err(|e| {
+        if e.message().contains("not a git repository") || e.message().contains("does not point to a valid git repository") {
+            format!("'{}' is not a Git repository. Select a folder that contains a .git directory.", path)
+        } else {
+            format!("Failed to open repository: {}", e)
+        }
+    })
 }
 
 #[tauri::command]
@@ -158,6 +177,7 @@ pub fn get_commit_detail(path: String, oid: String) -> Result<CommitDetail, Stri
 
 #[tauri::command]
 pub fn update_commit(
+    app: AppHandle,
     path: String,
     oid: String,
     new_author_name: Option<String>,
@@ -181,6 +201,20 @@ pub fn update_commit(
         .to_string();
     let head_oid = head.target().ok_or("HEAD has no target")?;
 
+    // Save a backup ref before rewriting
+    let branch_shorthand = head
+        .shorthand()
+        .unwrap_or("unknown")
+        .to_string();
+    let backup_name = backup_ref_name(&branch_shorthand);
+    repo.reference(
+        &backup_name,
+        head_oid,
+        true,
+        "git-history-editor: pre-rewrite backup",
+    )
+    .map_err(|e| format!("Failed to create backup ref: {}", e))?;
+
     // Collect all commits from HEAD back to root in reverse topological order (oldest first)
     let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
     revwalk.push(head_oid).map_err(|e| e.to_string())?;
@@ -198,8 +232,13 @@ pub fn update_commit(
     // Walk through commits, rewriting from the target onward
     let mut oid_map: HashMap<Oid, Oid> = HashMap::new();
     let mut commits_rewritten: usize = 0;
+    let total = all_oids.len();
 
-    for current_oid in &all_oids {
+    for (idx, current_oid) in all_oids.iter().enumerate() {
+        // Emit progress every 100 commits to avoid flooding the event bus
+        if idx % 100 == 0 {
+            let _ = app.emit("rewrite-progress", RewriteProgress { current: idx, total });
+        }
         let commit = repo.find_commit(*current_oid).map_err(|e| e.to_string())?;
 
         // Check if any parent was rewritten or if this is the target
@@ -239,7 +278,8 @@ pub fn update_commit(
                 new_author_date.unwrap_or(orig_author.when().seconds()),
                 new_author_offset.unwrap_or(orig_author.when().offset_minutes()),
             );
-            Signature::new(&author_name_str, &author_email_str, &time).map_err(|e| e.to_string())?
+            Signature::new(&author_name_str, &author_email_str, &time)
+                .map_err(|e| format!("Invalid author name or email: {}", e))?
         } else {
             author_name_str = orig_author.name().unwrap_or("").to_string();
             author_email_str = orig_author.email().unwrap_or("").to_string();
@@ -268,7 +308,8 @@ pub fn update_commit(
                 new_committer_date.unwrap_or(orig_committer.when().seconds()),
                 new_committer_offset.unwrap_or(orig_committer.when().offset_minutes()),
             );
-            Signature::new(&committer_name_str, &committer_email_str, &time).map_err(|e| e.to_string())?
+            Signature::new(&committer_name_str, &committer_email_str, &time)
+                .map_err(|e| format!("Invalid committer name or email: {}", e))?
         } else {
             committer_name_str = orig_committer.name().unwrap_or("").to_string();
             committer_email_str = orig_committer.email().unwrap_or("").to_string();
@@ -309,7 +350,7 @@ pub fn update_commit(
         true,
         &format!("git-history-editor: rewrote commit {}", &oid[..8]),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| format!("Failed to update branch ref (do you have write permissions?): {}", e))?;
 
     let new_target_oid = oid_map
         .get(&target_oid)
@@ -320,4 +361,80 @@ pub fn update_commit(
         new_oid: new_target_oid.to_string(),
         commits_rewritten,
     })
+}
+
+#[derive(Serialize, Clone)]
+pub struct BackupInfo {
+    pub exists: bool,
+    pub backup_oid: Option<String>,
+    pub branch: String,
+}
+
+#[tauri::command]
+pub fn check_backup(path: String) -> Result<BackupInfo, String> {
+    let repo = open_repo(&path)?;
+
+    let head = repo.head().ok();
+    let branch = head
+        .as_ref()
+        .and_then(|h| h.shorthand().map(String::from))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let ref_name = backup_ref_name(&branch);
+    let result = match repo.find_reference(&ref_name) {
+        Ok(reference) => {
+            let oid = reference.target().map(|o| o.to_string());
+            BackupInfo {
+                exists: true,
+                backup_oid: oid,
+                branch,
+            }
+        }
+        Err(_) => BackupInfo {
+            exists: false,
+            backup_oid: None,
+            branch,
+        },
+    };
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn restore_backup(path: String) -> Result<String, String> {
+    let repo = open_repo(&path)?;
+
+    let head = repo.head().map_err(|e| e.to_string())?;
+    let branch_ref_name = head
+        .name()
+        .ok_or("Cannot restore: HEAD is detached.")?
+        .to_string();
+    let branch_shorthand = head
+        .shorthand()
+        .unwrap_or("unknown")
+        .to_string();
+
+    let ref_name = backup_ref_name(&branch_shorthand);
+    let backup_ref = repo
+        .find_reference(&ref_name)
+        .map_err(|_| "No backup found for this branch.")?;
+    let backup_oid = backup_ref
+        .target()
+        .ok_or("Backup ref has no target.")?;
+
+    // Reset the branch to the backup OID
+    repo.reference(
+        &branch_ref_name,
+        backup_oid,
+        true,
+        "git-history-editor: restored from pre-rewrite backup",
+    )
+    .map_err(|e| format!("Failed to restore: {}", e))?;
+
+    // Delete the backup ref
+    let mut backup_ref = repo
+        .find_reference(&ref_name)
+        .map_err(|e| e.to_string())?;
+    backup_ref.delete().map_err(|e| format!("Restored successfully but failed to clean up backup ref: {}", e))?;
+
+    Ok(backup_oid.to_string())
 }

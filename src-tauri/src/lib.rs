@@ -11,6 +11,8 @@ pub fn run() {
             git_commands::get_commits,
             git_commands::get_commit_detail,
             git_commands::update_commit,
+            git_commands::check_backup,
+            git_commands::restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

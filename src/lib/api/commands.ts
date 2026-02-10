@@ -54,6 +54,20 @@ export async function getCommitDetail(
   return invoke("get_commit_detail", { path, oid });
 }
 
+export interface BackupInfo {
+  exists: boolean;
+  backup_oid: string | null;
+  branch: string;
+}
+
+export async function checkBackup(path: string): Promise<BackupInfo> {
+  return invoke("check_backup", { path });
+}
+
+export async function restoreBackup(path: string): Promise<string> {
+  return invoke("restore_backup", { path });
+}
+
 export interface UpdateCommitParams {
   path: string;
   oid: string;

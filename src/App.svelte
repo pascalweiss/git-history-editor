@@ -7,12 +7,16 @@
     getCommits,
     getCommitDetail,
     updateCommit,
+    checkBackup,
+    restoreBackup,
     type CommitSummary,
     type CommitDetail,
     type UpdateCommitParams,
     type RepoInfo,
+    type BackupInfo,
   } from "./lib/api/commands";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { load, type Store } from "@tauri-apps/plugin-store";
 
   const PAGE_SIZE = 100;
@@ -30,6 +34,18 @@
   let error = $state("");
   let pathInput = $state("");
   let lastSaveResult = $state("");
+  let backup = $state<BackupInfo | null>(null);
+  let restoring = $state(false);
+  let rewriteProgress = $state<{ current: number; total: number } | null>(null);
+  let unlistenProgress: UnlistenFn | null = null;
+
+  async function setupProgressListener() {
+    unlistenProgress = await listen<{ current: number; total: number }>("rewrite-progress", (event) => {
+      rewriteProgress = event.payload;
+    });
+  }
+
+  setupProgressListener();
 
   async function initStore() {
     store = await load("recent-repos.json", { autoSave: true });
@@ -67,6 +83,7 @@
       loading = false;
       await addRecentRepo(path);
       await loadMoreCommits();
+      backup = await checkBackup(path);
     } catch (e) {
       error = String(e);
     } finally {
@@ -102,6 +119,7 @@
     saving = true;
     error = "";
     lastSaveResult = "";
+    rewriteProgress = null;
     try {
       const result = await updateCommit(params);
       lastSaveResult = `Rewrote ${result.commits_rewritten} commit(s). New hash: ${result.new_oid.slice(0, 7)}`;
@@ -114,10 +132,12 @@
 
       selectedOid = result.new_oid;
       selectedCommit = await getCommitDetail(repoPath, result.new_oid);
+      backup = await checkBackup(repoPath);
     } catch (e) {
       error = String(e);
     } finally {
       saving = false;
+      rewriteProgress = null;
     }
   }
 
@@ -126,6 +146,29 @@
     if (selected) {
       pathInput = selected as string;
       handleOpenRepo();
+    }
+  }
+
+  async function handleRestore() {
+    if (!repoPath || restoring) return;
+    restoring = true;
+    error = "";
+    lastSaveResult = "";
+    try {
+      await restoreBackup(repoPath);
+      lastSaveResult = "Restored to pre-rewrite state";
+
+      commits = [];
+      const info = await openRepository(repoPath);
+      repoInfo = info;
+      selectedOid = "";
+      selectedCommit = null;
+      await loadMoreCommits();
+      backup = await checkBackup(repoPath);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      restoring = false;
     }
   }
 
@@ -186,19 +229,32 @@
   {:else}
     <div class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-secondary btn-sm" onclick={() => { repoPath = ""; repoInfo = null; commits = []; selectedCommit = null; error = ""; lastSaveResult = ""; }}>
+        <button class="btn btn-secondary btn-sm" onclick={() => { repoPath = ""; repoInfo = null; commits = []; selectedCommit = null; error = ""; lastSaveResult = ""; backup = null; }}>
           &larr; Back
         </button>
         <span class="repo-name">{repoInfo?.path}</span>
         <span class="branch-badge">{repoInfo?.branch}</span>
         <span class="commit-count">{repoInfo?.commit_count} commits</span>
       </div>
-      {#if error}
-        <span class="toolbar-error">{error}</span>
-      {/if}
-      {#if lastSaveResult}
-        <span class="toolbar-success">{lastSaveResult}</span>
-      {/if}
+      <div class="toolbar-right">
+        {#if backup?.exists}
+          <button class="btn btn-warning btn-sm" onclick={handleRestore} disabled={restoring || saving}>
+            {restoring ? "Restoring..." : "Undo Last Rewrite"}
+          </button>
+        {/if}
+        {#if saving && rewriteProgress}
+          <div class="progress-container">
+            <div class="progress-bar" style="width: {Math.round((rewriteProgress.current / rewriteProgress.total) * 100)}%"></div>
+            <span class="progress-text">Rewriting... {rewriteProgress.current}/{rewriteProgress.total}</span>
+          </div>
+        {/if}
+        {#if error}
+          <span class="toolbar-error">{error}</span>
+        {/if}
+        {#if lastSaveResult}
+          <span class="toolbar-success">{lastSaveResult}</span>
+        {/if}
+      </div>
     </div>
     <div class="main-content">
       <div class="left-panel">
@@ -387,6 +443,50 @@
     font-size: 11px;
     color: var(--text-muted);
     white-space: nowrap;
+  }
+
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .btn-warning {
+    background: var(--warning);
+    color: var(--bg-primary);
+    border-color: var(--warning);
+  }
+
+  .btn-warning:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .progress-container {
+    position: relative;
+    width: 180px;
+    height: 20px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.1s;
+  }
+
+  .progress-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-primary);
+    font-weight: 500;
   }
 
   .toolbar-error {
