@@ -20,8 +20,8 @@
 - [x] Create `scripts/notarize.sh` — Submits `.app` or `.dmg` to Apple notarization, waits, staples ticket. Supports both API key and Apple ID auth.
 - [x] Create `scripts/release.sh` — Full pipeline: build → sign → notarize app → create DMG → sign DMG → notarize DMG
 - [x] Add tests — 11 Rust tests covering: open repo (with commits, empty, non-git), commit pagination, commit detail, rewrite (message, author, descendant preservation), backup/restore cycle
-- [ ] Add `tauri-plugin-updater` for auto-updates
-- [ ] Write a privacy policy page (required even for notarized distribution)
+- [x] Add `tauri-plugin-updater` for auto-updates — "Check for updates" on welcome screen, downloads and relaunches. Endpoint placeholder for GitHub Releases. Network client entitlement added. CSP updated for GitHub connections.
+- [x] Write privacy policy — `docs/privacy-policy.html`, states no data collection, explains local storage and update check
 
 ## Phase 4 — Nice to Have
 

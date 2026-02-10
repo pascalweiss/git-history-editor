@@ -18,6 +18,8 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { load, type Store } from "@tauri-apps/plugin-store";
+  import { check } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
 
   const PAGE_SIZE = 100;
   const MAX_RECENT_REPOS = 10;
@@ -38,6 +40,9 @@
   let restoring = $state(false);
   let rewriteProgress = $state<{ current: number; total: number } | null>(null);
   let unlistenProgress: UnlistenFn | null = null;
+  let updateStatus = $state<"idle" | "checking" | "available" | "downloading" | "ready" | "error">("idle");
+  let updateVersion = $state("");
+  let updateError = $state("");
 
   async function setupProgressListener() {
     unlistenProgress = await listen<{ current: number; total: number }>("rewrite-progress", (event) => {
@@ -46,6 +51,38 @@
   }
 
   setupProgressListener();
+
+  async function checkForUpdates() {
+    updateStatus = "checking";
+    updateError = "";
+    try {
+      const update = await check();
+      if (update) {
+        updateVersion = update.version;
+        updateStatus = "available";
+      } else {
+        updateStatus = "idle";
+      }
+    } catch (e) {
+      updateError = String(e);
+      updateStatus = "error";
+    }
+  }
+
+  async function downloadAndInstallUpdate() {
+    updateStatus = "downloading";
+    try {
+      const update = await check();
+      if (update) {
+        await update.downloadAndInstall();
+        updateStatus = "ready";
+        await relaunch();
+      }
+    } catch (e) {
+      updateError = String(e);
+      updateStatus = "error";
+    }
+  }
 
   async function initStore() {
     store = await load("recent-repos.json", { autoSave: true });
@@ -225,6 +262,23 @@
           </ul>
         </div>
       {/if}
+      <div class="update-section">
+        {#if updateStatus === "idle"}
+          <button class="update-link" onclick={checkForUpdates}>Check for updates</button>
+        {:else if updateStatus === "checking"}
+          <span class="update-text">Checking for updates...</span>
+        {:else if updateStatus === "available"}
+          <span class="update-text">Version {updateVersion} available.</span>
+          <button class="update-link" onclick={downloadAndInstallUpdate}>Download and install</button>
+        {:else if updateStatus === "downloading"}
+          <span class="update-text">Downloading update...</span>
+        {:else if updateStatus === "ready"}
+          <span class="update-text">Restarting...</span>
+        {:else if updateStatus === "error"}
+          <span class="update-text update-error">{updateError}</span>
+          <button class="update-link" onclick={checkForUpdates}>Retry</button>
+        {/if}
+      </div>
     </div>
   {:else}
     <div class="toolbar">
@@ -400,6 +454,36 @@
   .recent-remove:hover {
     color: var(--danger);
     background: var(--bg-secondary);
+  }
+
+  .update-section {
+    margin-top: 24px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .update-link {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    text-decoration: underline;
+  }
+
+  .update-link:hover {
+    color: var(--accent);
+  }
+
+  .update-text {
+    color: var(--text-muted);
+  }
+
+  .update-error {
+    color: var(--danger);
   }
 
   .toolbar {

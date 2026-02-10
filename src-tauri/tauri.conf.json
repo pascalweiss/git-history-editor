@@ -21,19 +21,28 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' asset: tauri:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' asset: tauri:; connect-src 'self' ipc: http://ipc.localhost https://github.com https://objects.githubusercontent.com"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png"
     ],
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "10.13"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/OWNER/git-history-editor/releases/latest/download/latest.json"
+      ],
+      "pubkey": "REPLACE_WITH_YOUR_PUBLIC_KEY"
     }
   }
 }
