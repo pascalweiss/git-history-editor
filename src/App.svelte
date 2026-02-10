@@ -13,11 +13,15 @@
     type RepoInfo,
   } from "./lib/api/commands";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { load, type Store } from "@tauri-apps/plugin-store";
 
   const PAGE_SIZE = 100;
+  const MAX_RECENT_REPOS = 10;
 
   let repoPath = $state("");
   let repoInfo = $state<RepoInfo | null>(null);
+  let recentRepos = $state<string[]>([]);
+  let store: Store | null = null;
   let commits = $state<CommitSummary[]>([]);
   let selectedOid = $state("");
   let selectedCommit = $state<CommitDetail | null>(null);
@@ -26,6 +30,26 @@
   let error = $state("");
   let pathInput = $state("");
   let lastSaveResult = $state("");
+
+  async function initStore() {
+    store = await load("recent-repos.json", { autoSave: true });
+    const saved = await store.get<string[]>("recentRepos");
+    if (saved) {
+      recentRepos = saved;
+    }
+  }
+
+  async function addRecentRepo(path: string) {
+    recentRepos = [path, ...recentRepos.filter((r) => r !== path)].slice(0, MAX_RECENT_REPOS);
+    await store?.set("recentRepos", recentRepos);
+  }
+
+  async function removeRecentRepo(path: string) {
+    recentRepos = recentRepos.filter((r) => r !== path);
+    await store?.set("recentRepos", recentRepos);
+  }
+
+  initStore();
 
   async function handleOpenRepo() {
     const path = pathInput.trim();
@@ -41,6 +65,7 @@
       selectedOid = "";
       selectedCommit = null;
       loading = false;
+      await addRecentRepo(path);
       await loadMoreCommits();
     } catch (e) {
       error = String(e);
@@ -97,7 +122,7 @@
   }
 
   async function handleBrowse() {
-    const selected = await open({ directory: true, multiple: false, title: "Select Git Repository" });
+    const selected = await open({ directory: true, multiple: false, recursive: true, title: "Select Git Repository" });
     if (selected) {
       pathInput = selected as string;
       handleOpenRepo();
@@ -133,6 +158,29 @@
       </div>
       {#if error}
         <p class="error">{error}</p>
+      {/if}
+      {#if recentRepos.length > 0}
+        <div class="recent-repos">
+          <h3>Recent Repositories</h3>
+          <ul class="recent-list">
+            {#each recentRepos as repo}
+              <li class="recent-item">
+                <button
+                  class="recent-link"
+                  onclick={() => { pathInput = repo; handleOpenRepo(); }}
+                  disabled={loading}
+                >
+                  {repo}
+                </button>
+                <button
+                  class="recent-remove"
+                  onclick={() => removeRecentRepo(repo)}
+                  title="Remove from recent"
+                >&times;</button>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </div>
   {:else}
@@ -226,6 +274,76 @@
   .error {
     color: var(--danger);
     font-size: 12px;
+  }
+
+  .recent-repos {
+    width: 100%;
+    max-width: 500px;
+    margin-top: 16px;
+  }
+
+  .recent-repos h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .recent-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .recent-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--radius);
+  }
+
+  .recent-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .recent-link {
+    flex: 1;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 6px 8px;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .recent-link:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  .recent-link:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .recent-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 14px;
+    line-height: 1;
+    border-radius: var(--radius);
+  }
+
+  .recent-remove:hover {
+    color: var(--danger);
+    background: var(--bg-secondary);
   }
 
   .toolbar {

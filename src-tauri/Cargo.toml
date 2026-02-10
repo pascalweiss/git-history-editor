@@ -11,6 +11,9 @@ serde_json = "1"
 git2 = { version = "0.20", features = ["vendored-libgit2"] }
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-persisted-scope = "2"
+tauri-plugin-store = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
