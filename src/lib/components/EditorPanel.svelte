@@ -23,14 +23,58 @@
 
   let showConfirm = $state(false);
 
+  // Co-authored-by trailer parsing
+  interface CoAuthor {
+    name: string;
+    email: string;
+  }
+  let coAuthors = $state<CoAuthor[]>([]);
+  let origCoAuthors = $state<CoAuthor[]>([]);
+
+  function parseCoAuthors(msg: string): { body: string; coAuthors: CoAuthor[] } {
+    const lines = msg.split("\n");
+    const trailerLines: CoAuthor[] = [];
+    const bodyLines: string[] = [];
+    for (const line of lines) {
+      const match = line.match(/^Co-authored-by:\s*(.+?)\s*<(.+?)>\s*$/i);
+      if (match) {
+        trailerLines.push({ name: match[1], email: match[2] });
+      } else {
+        bodyLines.push(line);
+      }
+    }
+    // Trim trailing blank lines from body
+    while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1].trim() === "") {
+      bodyLines.pop();
+    }
+    return { body: bodyLines.join("\n"), coAuthors: trailerLines };
+  }
+
+  function buildMessage(body: string, authors: CoAuthor[]): string {
+    if (authors.length === 0) return body;
+    const trailers = authors
+      .filter(a => a.name.trim() || a.email.trim())
+      .map(a => `Co-authored-by: ${a.name} <${a.email}>`);
+    if (trailers.length === 0) return body;
+    return body + "\n\n" + trailers.join("\n");
+  }
+
+  function addCoAuthor() {
+    coAuthors = [...coAuthors, { name: "", email: "" }];
+  }
+
+  function removeCoAuthor(index: number) {
+    coAuthors = coAuthors.filter((_, i) => i !== index);
+  }
+
   // Track the original values to detect changes
-  let origAuthorName = "";
-  let origAuthorEmail = "";
-  let origAuthorDateStr = "";
-  let origCommitterName = "";
-  let origCommitterEmail = "";
-  let origCommitterDateStr = "";
-  let origMessage = "";
+  let origAuthorName = $state("");
+  let origAuthorEmail = $state("");
+  let origAuthorDateStr = $state("");
+  let origCommitterName = $state("");
+  let origCommitterEmail = $state("");
+  let origCommitterDateStr = $state("");
+  let origMessage = $state("");
 
   $effect(() => {
     if (commit) {
@@ -40,7 +84,10 @@
       committerName = commit.committer_name;
       committerEmail = commit.committer_email;
       committerDateStr = formatTimestamp(commit.committer_date, commit.committer_offset);
-      message = commit.message;
+
+      const parsed = parseCoAuthors(commit.message);
+      message = parsed.body;
+      coAuthors = parsed.coAuthors;
 
       origAuthorName = commit.author_name;
       origAuthorEmail = commit.author_email;
@@ -48,7 +95,8 @@
       origCommitterName = commit.committer_name;
       origCommitterEmail = commit.committer_email;
       origCommitterDateStr = committerDateStr;
-      origMessage = commit.message;
+      origMessage = parsed.body;
+      origCoAuthors = parsed.coAuthors.map(a => ({ ...a }));
     }
   });
 
@@ -71,6 +119,11 @@
     return { seconds, offset: originalOffset };
   }
 
+  let coAuthorsChanged = $derived(
+    coAuthors.length !== origCoAuthors.length ||
+    coAuthors.some((a, i) => a.name !== origCoAuthors[i]?.name || a.email !== origCoAuthors[i]?.email)
+  );
+
   let hasChanges = $derived(
     authorName !== origAuthorName ||
     authorEmail !== origAuthorEmail ||
@@ -78,7 +131,8 @@
     committerName !== origCommitterName ||
     committerEmail !== origCommitterEmail ||
     committerDateStr !== origCommitterDateStr ||
-    message !== origMessage
+    message !== origMessage ||
+    coAuthorsChanged
   );
 
   function handleSave() {
@@ -109,7 +163,9 @@
       params.newCommitterDate = parsed.seconds;
       params.newCommitterOffset = parsed.offset;
     }
-    if (message !== origMessage) params.newMessage = message;
+    const fullMessage = buildMessage(message, coAuthors);
+    const origFullMessage = buildMessage(origMessage, origCoAuthors);
+    if (fullMessage !== origFullMessage) params.newMessage = fullMessage;
 
     onsave(params);
   }
@@ -123,9 +179,26 @@
       committerEmail = origCommitterEmail;
       committerDateStr = origCommitterDateStr;
       message = origMessage;
+      coAuthors = origCoAuthors.map(a => ({ ...a }));
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === "s") {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      if (showConfirm) {
+        showConfirm = false;
+      } else if (hasChanges) {
+        handleDiscard();
+      }
     }
   }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="editor-panel">
   {#if !commit}
@@ -146,15 +219,15 @@
         <legend>Author</legend>
         <div class="field">
           <label for="author-name">Name</label>
-          <input id="author-name" type="text" bind:value={authorName} />
+          <input id="author-name" type="text" bind:value={authorName} class:modified={authorName !== origAuthorName} />
         </div>
         <div class="field">
           <label for="author-email">Email</label>
-          <input id="author-email" type="email" bind:value={authorEmail} />
+          <input id="author-email" type="email" bind:value={authorEmail} class:modified={authorEmail !== origAuthorEmail} />
         </div>
         <div class="field">
           <label for="author-date">Date</label>
-          <input id="author-date" type="datetime-local" step="1" bind:value={authorDateStr} />
+          <input id="author-date" type="datetime-local" step="1" bind:value={authorDateStr} class:modified={authorDateStr !== origAuthorDateStr} />
         </div>
       </fieldset>
 
@@ -162,23 +235,45 @@
         <legend>Committer</legend>
         <div class="field">
           <label for="committer-name">Name</label>
-          <input id="committer-name" type="text" bind:value={committerName} />
+          <input id="committer-name" type="text" bind:value={committerName} class:modified={committerName !== origCommitterName} />
         </div>
         <div class="field">
           <label for="committer-email">Email</label>
-          <input id="committer-email" type="email" bind:value={committerEmail} />
+          <input id="committer-email" type="email" bind:value={committerEmail} class:modified={committerEmail !== origCommitterEmail} />
         </div>
         <div class="field">
           <label for="committer-date">Date</label>
-          <input id="committer-date" type="datetime-local" step="1" bind:value={committerDateStr} />
+          <input id="committer-date" type="datetime-local" step="1" bind:value={committerDateStr} class:modified={committerDateStr !== origCommitterDateStr} />
         </div>
       </fieldset>
 
       <fieldset class="field-group">
         <legend>Message</legend>
         <div class="field message-field">
-          <textarea bind:value={message} rows="8"></textarea>
+          <textarea bind:value={message} rows="8" class:modified={message !== origMessage}></textarea>
         </div>
+      </fieldset>
+
+      <fieldset class="field-group">
+        <legend>Co-Authors</legend>
+        {#each coAuthors as coAuthor, i}
+          <div class="coauthor-row" class:modified={!origCoAuthors[i] || coAuthor.name !== origCoAuthors[i].name || coAuthor.email !== origCoAuthors[i].email}>
+            <input
+              type="text"
+              bind:value={coAuthor.name}
+              placeholder="Name"
+              class="coauthor-name"
+            />
+            <input
+              type="email"
+              bind:value={coAuthor.email}
+              placeholder="email@example.com"
+              class="coauthor-email"
+            />
+            <button class="coauthor-remove" onclick={() => removeCoAuthor(i)} title="Remove co-author">&times;</button>
+          </div>
+        {/each}
+        <button class="btn btn-sm btn-secondary coauthor-add" onclick={addCoAuthor}>+ Add Co-Author</button>
       </fieldset>
 
       {#if commit.parent_oids.length > 0}
@@ -192,12 +287,17 @@
     </div>
 
     <div class="editor-footer">
-      <button class="btn btn-secondary" onclick={handleDiscard} disabled={!hasChanges || saving}>
-        Discard
-      </button>
-      <button class="btn btn-primary" onclick={handleSave} disabled={!hasChanges || saving}>
-        {saving ? "Saving..." : "Save Changes"}
-      </button>
+      <div class="shortcut-hints">
+        <kbd>⌘S</kbd> Save &nbsp; <kbd>Esc</kbd> Discard
+      </div>
+      <div class="footer-actions">
+        <button class="btn btn-secondary" onclick={handleDiscard} disabled={!hasChanges || saving}>
+          Discard
+        </button>
+        <button class="btn btn-primary" onclick={handleSave} disabled={!hasChanges || saving}>
+          {saving ? "Saving..." : "Save Changes"}
+        </button>
+      </div>
     </div>
 
     {#if showConfirm}
@@ -327,6 +427,12 @@
     border-color: var(--accent);
   }
 
+  .field input.modified,
+  .field textarea.modified {
+    border-left: 3px solid var(--warning);
+    padding-left: 8px;
+  }
+
   .field textarea {
     font-family: var(--font-mono);
     font-size: 12px;
@@ -359,13 +465,97 @@
     border-radius: 3px;
   }
 
+  .coauthor-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-left: 0;
+    border-left: 3px solid transparent;
+    transition: border-color 0.15s;
+  }
+
+  .coauthor-row:first-child {
+    margin-top: 0;
+  }
+
+  .coauthor-row.modified {
+    border-left-color: var(--warning);
+    padding-left: 4px;
+  }
+
+  .coauthor-name {
+    flex: 1;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .coauthor-email {
+    flex: 1;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .coauthor-name:focus,
+  .coauthor-email:focus {
+    border-color: var(--accent);
+  }
+
+  .coauthor-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 16px;
+    line-height: 1;
+    border-radius: var(--radius);
+  }
+
+  .coauthor-remove:hover {
+    color: var(--danger);
+    background: var(--bg-secondary);
+  }
+
+  .coauthor-add {
+    margin-top: 8px;
+  }
+
   .editor-footer {
     display: flex;
-    gap: 8px;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     padding: 12px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
+  }
+
+  .shortcut-hints {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .shortcut-hints kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  .footer-actions {
+    display: flex;
+    gap: 8px;
   }
 
   .btn {

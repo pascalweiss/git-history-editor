@@ -25,7 +25,7 @@
 
 ## Phase 4 — Nice to Have
 
-- [ ] Keyboard shortcuts (Cmd+S to save, Escape to cancel, etc.)
-- [ ] Visual indicators for modified fields (highlight what changed before saving)
-- [ ] Search/filter commits by message or author
-- [ ] Co-authored-by trailer editing (mentioned in README but not yet implemented)
+- [x] Keyboard shortcuts — `⌘S` save, `Escape` discard/close dialog, `⌘O` browse for repo, `⌘Z` undo last rewrite (outside text inputs). Shortcut hints shown in editor footer.
+- [x] Visual indicators for modified fields — Inputs with changed values get a yellow left border (`var(--warning)`). Co-author rows also highlighted when modified.
+- [x] Search/filter commits by message or author — Search bar above commit list filters by message, author name/email, or hash prefix. Shows match count. `Escape` clears filter.
+- [x] Co-authored-by trailer editing — Parses `Co-authored-by:` trailers from commit messages into editable name/email rows. Add/remove co-authors with dedicated UI. Trailers reconstructed on save.

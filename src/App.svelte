@@ -209,12 +209,33 @@
     }
   }
 
-  function handleKeydown(e: KeyboardEvent) {
+  function handleInputKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       handleOpenRepo();
     }
   }
+
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === "o") {
+      e.preventDefault();
+      if (!repoPath) {
+        handleBrowse();
+      }
+    } else if (mod && e.key === "z" && !e.shiftKey) {
+      // Only handle Cmd+Z for undo rewrite when in repo view and backup exists
+      // Don't interfere with normal text undo in inputs
+      const target = e.target as HTMLElement;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (repoPath && backup?.exists && !restoring && !saving) {
+        e.preventDefault();
+        handleRestore();
+      }
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <div class="app">
   {#if !repoPath}
@@ -226,7 +247,7 @@
           type="text"
           bind:value={pathInput}
           placeholder="/path/to/repository"
-          onkeydown={handleKeydown}
+          onkeydown={handleInputKeydown}
           class="repo-input"
         />
         <button class="btn btn-secondary" onclick={handleBrowse} disabled={loading}>
