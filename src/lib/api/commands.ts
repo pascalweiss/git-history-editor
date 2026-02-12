@@ -47,6 +47,24 @@ export async function getCommits(
   return invoke("get_commits", { path, offset, limit });
 }
 
+export interface CommitFilters {
+  author_name?: string;
+  author_email?: string;
+  message_pattern?: string;
+  date_start?: number;
+  date_end?: number;
+  file_path?: string;
+}
+
+export async function getCommitsFiltered(
+  path: string,
+  offset: number,
+  limit: number,
+  filters?: CommitFilters
+): Promise<CommitSummary[]> {
+  return invoke("get_commits_filtered", { path, offset, limit, filters: filters ?? null });
+}
+
 export async function getCommitDetail(
   path: string,
   oid: string

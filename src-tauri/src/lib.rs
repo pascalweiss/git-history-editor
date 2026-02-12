@@ -11,6 +11,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             git_commands::open_repository,
             git_commands::get_commits,
+            git_commands::get_commits_filtered,
             git_commands::get_commit_detail,
             git_commands::update_commit,
             git_commands::check_backup,

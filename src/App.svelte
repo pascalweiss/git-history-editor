@@ -5,6 +5,7 @@
   import {
     openRepository,
     getCommits,
+    getCommitsFiltered,
     getCommitDetail,
     updateCommit,
     checkBackup,
@@ -14,6 +15,7 @@
     type UpdateCommitParams,
     type RepoInfo,
     type BackupInfo,
+    type CommitFilters,
   } from "./lib/api/commands";
   import { open } from "@tauri-apps/plugin-dialog";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -43,6 +45,7 @@
   let updateStatus = $state<"idle" | "checking" | "available" | "downloading" | "ready" | "error">("idle");
   let updateVersion = $state("");
   let updateError = $state("");
+  let filters = $state<CommitFilters>({});
 
   async function setupProgressListener() {
     unlistenProgress = await listen<{ current: number; total: number }>("rewrite-progress", (event) => {
@@ -117,6 +120,7 @@
       commits = [];
       selectedOid = "";
       selectedCommit = null;
+      filters = {};
       loading = false;
       await addRecentRepo(path);
       await loadMoreCommits();
@@ -130,17 +134,36 @@
 
   async function loadMoreCommits() {
     if (loading || !repoPath) return;
-    if (repoInfo && commits.length >= repoInfo.commit_count) return;
 
     loading = true;
     try {
-      const newCommits = await getCommits(repoPath, commits.length, PAGE_SIZE);
+      const hasFilters = !!(
+        filters.author_name ||
+        filters.author_email ||
+        filters.message_pattern ||
+        filters.date_start ||
+        filters.date_end ||
+        filters.file_path
+      );
+
+      const newCommits = hasFilters
+        ? await getCommitsFiltered(repoPath, commits.length, PAGE_SIZE, filters)
+        : await getCommits(repoPath, commits.length, PAGE_SIZE);
+
       commits = [...commits, ...newCommits];
     } catch (e) {
       error = String(e);
     } finally {
       loading = false;
     }
+  }
+
+  async function handleFilterChange(newFilters: CommitFilters) {
+    filters = newFilters;
+    commits = [];
+    selectedOid = "";
+    selectedCommit = null;
+    await loadMoreCommits();
   }
 
   async function handleSelectCommit(oid: string) {
@@ -304,7 +327,7 @@
   {:else}
     <div class="toolbar">
       <div class="toolbar-left">
-        <button class="btn btn-secondary btn-sm" onclick={() => { repoPath = ""; repoInfo = null; commits = []; selectedCommit = null; error = ""; lastSaveResult = ""; backup = null; }}>
+        <button class="btn btn-secondary btn-sm" onclick={() => { repoPath = ""; repoInfo = null; commits = []; selectedCommit = null; error = ""; lastSaveResult = ""; backup = null; filters = {}; }}>
           &larr; Back
         </button>
         <span class="repo-name">{repoInfo?.path}</span>
@@ -336,8 +359,10 @@
         <CommitList
           {commits}
           bind:selectedOid
+          bind:filters
           onselect={handleSelectCommit}
           onloadmore={loadMoreCommits}
+          onfilterchange={handleFilterChange}
           {loading}
           totalCount={repoInfo?.commit_count ?? 0}
         />

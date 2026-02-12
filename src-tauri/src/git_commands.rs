@@ -1,5 +1,5 @@
 use git2::{Oid, Repository, Signature, Sort};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
@@ -17,6 +17,16 @@ pub struct CommitSummary {
     pub author_name: String,
     pub author_email: String,
     pub author_date: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CommitFilters {
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
+    pub message_pattern: Option<String>,
+    pub date_start: Option<i64>,
+    pub date_end: Option<i64>,
+    pub file_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -134,6 +144,223 @@ pub fn get_commits(path: String, offset: usize, limit: usize) -> Result<Vec<Comm
         .collect();
 
     Ok(commits)
+}
+
+fn matches_filters(
+    repo: &Repository,
+    commit: &git2::Commit,
+    filters: &CommitFilters,
+) -> Result<bool, String> {
+    let author = commit.author();
+    let author_name = author.name().unwrap_or("");
+    let author_email = author.email().unwrap_or("");
+    let author_date = author.when().seconds();
+    let message = commit.message().unwrap_or("");
+
+    // Author name filter (case-insensitive substring match)
+    if let Some(ref name_filter) = filters.author_name {
+        if !author_name.to_lowercase().contains(&name_filter.to_lowercase()) {
+            return Ok(false);
+        }
+    }
+
+    // Author email filter (case-insensitive substring match)
+    if let Some(ref email_filter) = filters.author_email {
+        if !author_email.to_lowercase().contains(&email_filter.to_lowercase()) {
+            return Ok(false);
+        }
+    }
+
+    // Message pattern filter (case-insensitive substring match)
+    if let Some(ref msg_filter) = filters.message_pattern {
+        if !message.to_lowercase().contains(&msg_filter.to_lowercase()) {
+            return Ok(false);
+        }
+    }
+
+    // Date range filter
+    if let Some(start) = filters.date_start {
+        if author_date < start {
+            return Ok(false);
+        }
+    }
+    if let Some(end) = filters.date_end {
+        if author_date > end {
+            return Ok(false);
+        }
+    }
+
+    // File path filter - check if commit touches the specified path
+    if let Some(ref file_path) = filters.file_path {
+        let touches_file = commit_touches_path(repo, commit, file_path)?;
+        if !touches_file {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn commit_touches_path(
+    repo: &Repository,
+    commit: &git2::Commit,
+    path_pattern: &str,
+) -> Result<bool, String> {
+    // Get commit tree
+    let commit_tree = commit.tree().map_err(|e| e.to_string())?;
+
+    // For root commits (no parents), check if path exists in tree
+    if commit.parent_count() == 0 {
+        return Ok(tree_contains_path(&commit_tree, path_pattern));
+    }
+
+    // For commits with parents, check diff against each parent
+    for parent_id in commit.parent_ids() {
+        let parent = repo.find_commit(parent_id).map_err(|e| e.to_string())?;
+        let parent_tree = parent.tree().map_err(|e| e.to_string())?;
+
+        let diff = repo
+            .diff_tree_to_tree(Some(&parent_tree), Some(&commit_tree), None)
+            .map_err(|e| e.to_string())?;
+
+        // Check if any delta touches our path
+        for delta in diff.deltas() {
+            let old_path = delta.old_file().path();
+            let new_path = delta.new_file().path();
+
+            if let Some(p) = old_path {
+                if path_matches_pattern(p, path_pattern) {
+                    return Ok(true);
+                }
+            }
+            if let Some(p) = new_path {
+                if path_matches_pattern(p, path_pattern) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn tree_contains_path(tree: &git2::Tree, path_pattern: &str) -> bool {
+    tree.iter().any(|entry| {
+        if let Some(name) = entry.name() {
+            path_matches_pattern(std::path::Path::new(name), path_pattern)
+        } else {
+            false
+        }
+    })
+}
+
+fn path_matches_pattern(path: &std::path::Path, pattern: &str) -> bool {
+    let path_str = path.to_string_lossy();
+
+    // Support simple glob patterns
+    if pattern.contains('*') {
+        // Convert simple glob to regex-like matching
+        // For now, support * as "any characters"
+        let pattern_lower = pattern.to_lowercase();
+        let path_lower = path_str.to_lowercase();
+
+        if pattern_lower.starts_with("*/") {
+            // Matches any directory prefix
+            let suffix = &pattern_lower[2..];
+            return path_lower.ends_with(suffix) || path_lower.contains(&format!("/{}", suffix));
+        } else if pattern_lower.ends_with("/*") {
+            // Matches any file in directory
+            let prefix = &pattern_lower[..pattern_lower.len()-2];
+            return path_lower.starts_with(prefix);
+        } else if pattern_lower.contains("*/") {
+            // Contains wildcard in middle - do substring match on parts
+            let parts: Vec<&str> = pattern_lower.split("*/").collect();
+            return parts.iter().all(|part| path_lower.contains(part));
+        } else {
+            // Simple wildcard - just check if pattern parts are in path
+            let pattern_parts: Vec<&str> = pattern_lower.split('*').filter(|s| !s.is_empty()).collect();
+            return pattern_parts.iter().all(|part| path_lower.contains(part));
+        }
+    }
+
+    // Exact match (case-insensitive)
+    path_str.to_lowercase() == pattern.to_lowercase() ||
+    path_str.to_lowercase().ends_with(&format!("/{}", pattern.to_lowercase()))
+}
+
+#[tauri::command]
+pub fn get_commits_filtered(
+    path: String,
+    offset: usize,
+    limit: usize,
+    filters: Option<CommitFilters>,
+) -> Result<Vec<CommitSummary>, String> {
+    let repo = open_repo(&path)?;
+
+    let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
+    if revwalk.push_head().is_err() {
+        return Ok(vec![]);
+    }
+    revwalk
+        .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .map_err(|e| e.to_string())?;
+
+    let filters = filters.unwrap_or(CommitFilters {
+        author_name: None,
+        author_email: None,
+        message_pattern: None,
+        date_start: None,
+        date_end: None,
+        file_path: None,
+    });
+
+    let mut matched_commits = Vec::new();
+    let mut skipped = 0;
+
+    for oid in revwalk.filter_map(|r| r.ok()) {
+        if matched_commits.len() >= limit {
+            break;
+        }
+
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Apply filters
+        if !matches_filters(&repo, &commit, &filters)? {
+            continue;
+        }
+
+        // Handle pagination offset
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+
+        let message = commit.message().unwrap_or("").to_string();
+        let short_message = message.lines().next().unwrap_or("").to_string();
+        let short_message = if short_message.len() > 72 {
+            format!("{}...", &short_message[..69])
+        } else {
+            short_message
+        };
+
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("").to_string();
+        let author_email = author.email().unwrap_or("").to_string();
+        let author_date = author.when().seconds();
+
+        matched_commits.push(CommitSummary {
+            oid: oid.to_string(),
+            short_message,
+            author_name,
+            author_email,
+            author_date,
+        });
+    }
+
+    Ok(matched_commits)
 }
 
 #[tauri::command]
